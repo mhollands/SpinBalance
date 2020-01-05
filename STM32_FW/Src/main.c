@@ -52,19 +52,19 @@ TIM_HandleTypeDef htim14;
 TIM_HandleTypeDef htim16;
 
 /* USER CODE BEGIN PV */
-
 int16_t old_angle = 0;
-//float ki = 0;
-//float kp = 35;
-//float kd = 0.5;
-float ki = 0;
-float kp = 10;
-float kd = 0.5;
 int16_t pos_dead_band = 0;
 int16_t neg_dead_band = -0;
 float i_error = 0;
 int dead = 0;
 int16_t current_speed = 0;
+
+// Configurable parameters
+float ki = 5;
+float kp = 5;
+float kd = 0.5;
+int do_usb = 0; // Set to 1 to do USB transactions
+int include_delay = 0; // Set to 1 to include a wait in the loop to achieve target loop time
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,7 +76,6 @@ static void MX_TIM14_Init(void);
 /* USER CODE BEGIN PFP */
 HAL_StatusTypeDef MPU_GetReg(uint8_t, uint8_t*, uint8_t);
 HAL_StatusTypeDef MPU_SetReg(uint8_t, uint8_t);
-void Move(int8_t direction);
 uint8_t MPU_Exists();
 void SET_PWM_SPEED(int32_t);
 int8_t sign(int16_t x);
@@ -137,14 +136,14 @@ int main(void)
   HAL_Delay(100);
   HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
   HAL_Delay(700);
-  if(!MPU_Exists())
+
+  while(!MPU_Exists())
   {
-	  CDC_Transmit_FS((uint8_t*)"MPU did not response\n\r", 22);
+	  if(do_usb) CDC_Transmit_FS((uint8_t*)"MPU did not response\n\r", 22);
   }
-  else
-  {
-	  CDC_Transmit_FS((uint8_t*)"MPU is alive\n\r", 14);
-  }
+
+  if(do_usb) CDC_Transmit_FS((uint8_t*)"MPU is alive\n\r", 14);
+
   MPU_SetReg(0x6b, 0x00);
   //MPU_SetReg(0x1c, 0x08);
   MPU_SetReg(0x1b, 0x10);
@@ -154,46 +153,17 @@ int main(void)
   HAL_TIM_PWM_Start(&htim14, TIM_CHANNEL_ALL);
   HAL_TIMEx_PWMN_Start(&htim14, TIM_CHANNEL_1);
 
-
   uint16_t delay_time = TARGET_PERIOD;
-  uint8_t usb_error_flag = 0;
   uint8_t acc_regs[6];
   float acc_vals[3];
   uint8_t gyro_regs[6];
   float gyro_vals[3];
   char usb_buf[150];
   uint8_t usb_buf_len;
+  uint8_t usb_error_flag = 0;
   float angle = 0;
   uint32_t t = HAL_GetTick();
 
-  int16_t i = 0;
-//  HAL_TIM_PWM_Start(&htim14, TIM_CHANNEL_1);
-  //__HAL_TIM_SET_COMPARE(&htim14, TIM_CHANNEL_1, 70);
-  //__HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 70);
-  //SET_PWM_SPEED(30);
-//  while(1)
-//  {
-//
-//  }
-
-//  while(1)
-//  {
-//	  //SET_PWM_SPEED(i);
-//	  //__HAL_TIM_SET_COMPARE(&htim14, TIM_CHANNEL_1, i);
-//	  __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, i);
-//	  usb_buf_len = sprintf(usb_buf, "%ld\n\r", i);
-//	  HAL_StatusTypeDef usb_result = CDC_Transmit_FS((uint8_t*)usb_buf, usb_buf_len);
-//	  HAL_Delay(100);
-//	  i+=1;
-//	  if(i>100)
-//	  {
-//		  i = 0;
-//	  }
-//  }
-  int gyroz_bias = 0;
-  int gyrox_bias = 0;
-  int gyroy_bias = 0;
-  int gc = 0;
   while (1)
   {
 	  // Read Acceleration values
@@ -201,28 +171,24 @@ int main(void)
 	  acc_vals[0] = ((int16_t)(acc_regs[0] << 8) + acc_regs[1])/16384.0;
 	  acc_vals[1] = ((int16_t)(acc_regs[2] << 8) + acc_regs[3])/16384.0;
 	  acc_vals[2] = ((int16_t)(acc_regs[4] << 8) + acc_regs[5])/16384.0;
-//	  acc_vals[0] = ((int16_t)(acc_regs[0] << 8) + acc_regs[1])/8192.0;
-//	  acc_vals[1] = ((int16_t)(acc_regs[2] << 8) + acc_regs[3])/8192.0;
-//	  acc_vals[2] = ((int16_t)(acc_regs[4] << 8) + acc_regs[5])/8192.0;
+
+	  // Check for accelerator saturation
 	  if((acc_vals[0] > 3.9) | (acc_vals[1] > 3.9) | (acc_vals[2] > 3.9) | (acc_vals[0] < -3.9) | (acc_vals[1] < -3.9) | (acc_vals[2] < -3.9))
 	  {
 		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 	  }
+
 	  // Read Gyro values
 	  MPU_GetReg(0x43, gyro_regs, 6);
-//	  gyro_vals[0] = ((int16_t)(gyro_regs[0] << 8) + gyro_regs[1])/131.0;
-//	  gyro_vals[1] = ((int16_t)(gyro_regs[2] << 8) + gyro_regs[3])/131.0;
-//	  gyro_vals[2] = ((int16_t)(gyro_regs[4] << 8) + gyro_regs[5])/131.0;
-	  gyro_vals[0] = ((int16_t)(gyro_regs[0] << 8) + gyro_regs[1])/32.8 + 0.1620;
+	  gyro_vals[0] = ((int16_t)(gyro_regs[0] << 8) + gyro_regs[1])/32.8; // + 0.1620;
 	  gyro_vals[1] = ((int16_t)(gyro_regs[2] << 8) + gyro_regs[3])/32.8;
-	  gyro_vals[2] = ((int16_t)(gyro_regs[4] << 8) + gyro_regs[5])/32.8 - 1.1653;
-//	  gyrox_bias += gyro_vals[0];
-//	  gyroy_bias += gyro_vals[1];
-//	  gyroz_bias += gyro_vals[2];
-//	  if((gyro_vals[0] > 900) | (gyro_vals[1] > 900) | (gyro_vals[2] > 900) | (gyro_vals[0] < -900) | (gyro_vals[1] < -900) | (gyro_vals[2] < -900))
-//	  {
-//		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-//	  }
+	  gyro_vals[2] = ((int16_t)(gyro_regs[4] << 8) + gyro_regs[5])/32.8; // - 1.1653;
+
+	  // Check for gyro saturation
+	  if((gyro_vals[0] > 900) | (gyro_vals[1] > 900) | (gyro_vals[2] > 900) | (gyro_vals[0] < -900) | (gyro_vals[1] < -900) | (gyro_vals[2] < -900))
+	  {
+		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+	  }
 
 	  // Get time delta
 	  uint32_t t_now = HAL_GetTick();
@@ -232,34 +198,27 @@ int main(void)
 
 	  // Calculate the accelerometer angle
 	  float accAngle = (atan2(acc_vals[0],acc_vals[1]) * 180 / PI);
-	  // Integrate gyro angle
-	  //gyroAngle = gyroAngle + t_delta * gyro_vals[2] / 1000;
 
+	  // Combine accelerometer and gyro angles
 	  angle = 0.98*(angle + gyro_vals[2]*t_delta/1000) + 0.02*accAngle;
 
 	  // Send USB
-	  usb_buf_len = 0;
-	  //usb_buf_len = sprintf(usb_buf, "%d %d %d\n\r", (int)(gyro_vals[0]), (int)(gyro_vals[1]), (int)(gyro_vals[2]));
-	  //usb_buf_len = sprintf(usb_buf, "Dt: %lu Accx: %d\tAccy: %d\tAccz: %d\tAccAngle: %d\n\r", t_delta, (int16_t)(acc_vals[0]*1000),(int16_t)(acc_vals[1]*1000),(int16_t)(acc_vals[2]*1000),(int16_t)(accAngle));
-	  //usb_buf_len = sprintf(usb_buf, "Dt: %lu\tGyrox: %d\tGyroy: %d\tGyroz: %d\tAccAngle: %d\tAngle: %d\n\r", t_delta,(int16_t)gyro_vals[0],(int16_t)gyro_vals[1],(int16_t)gyro_vals[2], (int16_t)(accAngle), (int16_t)(angle));
-	  //usb_buf_len = sprintf(usb_buf, "Dt: %d\tGyrox: %d\tGyroy: %d\tGyroz: %d\n\r", gc, gyrox_bias, gyroy_bias, gyroz_bias);
-	  //usb_buf_len = sprintf(usb_buf, "Dt: %lu Accx: %d\tAccy: %d\tAccz: %d\tAccAngle: %d\n\r", t_delta, (int16_t)(acc_vals[0]*1000),(int16_t)(acc_vals[1]*1000),(int16_t)(acc_vals[2]*1000),(int16_t)(accAngle));
-	  //HAL_StatusTypeDef usb_result = CDC_Transmit_FS((uint8_t*)usb_buf, usb_buf_len);
-	  //usb_error_flag = (usb_result == HAL_OK ? 0 : 1);
-//	  while(gc > 10000)
-//	  {
-//
-//	  }
-	  gc++;
-	  //SET_PWM_SPEED(abs(angle));
-	  int16_t speed = balance(angle, gyro_vals[2], t_delta);
-	  //usb_buf_len = sprintf(usb_buf, "%d\n\r", speed);
-	  //HAL_StatusTypeDef usb_result = CDC_Transmit_FS((uint8_t*)usb_buf, usb_buf_len);
-//	  Move(sign(angle)*100);
+	  if(do_usb)
+	  {
+		  usb_buf_len = 0;
+		  usb_buf_len = sprintf(usb_buf, "Dt: %lu\tAccx: %d\tAccy: %d\tAccz: %d\tAccAngle: %d\n\r", t_delta, (int16_t)(acc_vals[0]*1000),(int16_t)(acc_vals[1]*1000),(int16_t)(acc_vals[2]*1000),(int16_t)(accAngle));
+		  HAL_StatusTypeDef usb_result = CDC_Transmit_FS((uint8_t*)usb_buf, usb_buf_len);
+		  usb_error_flag = (usb_result == HAL_OK ? 0 : 1);
+	  }
 
-	  //HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	  //HAL_Delay(delay_time);
-    /* USER CODE END WHILE */
+	  int16_t speed = balance(angle, gyro_vals[2], t_delta);
+
+	  if(include_delay)
+	  {
+		  if(delay_time > 0) HAL_Delay(delay_time);
+	  }
+
+	  /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
@@ -519,8 +478,6 @@ int8_t sign(int16_t x)
 
 void SET_PWM_SPEED(int32_t value)
 {
-//    TIM_OC_InitTypeDef sConfigOC;
-
     int16_t m2 = (value > 0 ? value : 0);
     int16_t m1 = (value < 0 ? -1*value : 0);
 
@@ -528,20 +485,6 @@ void SET_PWM_SPEED(int32_t value)
     __HAL_TIM_SET_COMPARE(&htim14, TIM_CHANNEL_1, m2);
     HAL_TIMEx_PWMN_Start(&htim16, TIM_CHANNEL_1);
     HAL_TIM_PWM_Start(&htim14, TIM_CHANNEL_1);
-//    sConfigOC.OCMode = TIM_OCMODE_PWM1;
-//    sConfigOC.Pulse = m1;
-//    sConfigOC.OCNPolarity = TIM_OCPOLARITY_HIGH;
-//    sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-//    HAL_TIM_PWM_ConfigChannel(&htim16, &sConfigOC, TIM_CHANNEL_1);
-//    HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
-//    HAL_TIMEx_PWMN_Start(&htim16, TIM_CHANNEL_1);
-//
-//    sConfigOC.OCMode = TIM_OCMODE_PWM1;
-//    sConfigOC.Pulse = m2;
-//    sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-//    sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-//    HAL_TIM_PWM_ConfigChannel(&htim14, &sConfigOC, TIM_CHANNEL_1);
-//    HAL_TIM_PWM_Start(&htim14, TIM_CHANNEL_1);
 }
 
 int16_t balance(float angle, float delta_angle, uint32_t t_delta)
@@ -552,44 +495,16 @@ int16_t balance(float angle, float delta_angle, uint32_t t_delta)
 		dead = 1;
 		return 0;
 	}
-	//angle = angle;
-	//float delta_angle = 1000*(angle - old_angle)/t_delta;
+
 	old_angle = angle;
 	i_error += angle * t_delta / 1000;
 	int16_t desired_speed = (int16_t)(i_error*ki + angle*kp + delta_angle*kd);
 	desired_speed += (desired_speed > 0 ? pos_dead_band : (desired_speed < 0 ? neg_dead_band : 0));
 
-//	if(speed < 0)
-//	{
-//		speed = 0;
-//	}
-	//current_speed += (desired_speed-current_speed)/5;
 	current_speed = desired_speed;
-	//current_speed = 0;
 	SET_PWM_SPEED(current_speed);
-	return current_speed;
-}
 
-void Move(int8_t direction)
-{
-	int8_t m1 = GPIO_PIN_RESET;
-	int8_t m2 = GPIO_PIN_RESET;
-
-	if(direction > 0)
-	{
-		m1 = GPIO_PIN_SET;
-		m2 = GPIO_PIN_RESET;
-	}
-
-	if(direction < 0)
-	{
-		m1 = GPIO_PIN_RESET;
-		m2 = GPIO_PIN_SET;
-	}
-
-	//HAL_GPIO_WritePin(MOTOR1_GPIO_Port, MOTOR1_Pin, m1);
-	//HAL_GPIO_WritePin(MOTOR2_GPIO_Port, MOTOR2_Pin, m2);
-
+	return desired_speed;
 }
 
 uint8_t MPU_Exists()
