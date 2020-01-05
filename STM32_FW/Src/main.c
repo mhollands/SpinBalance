@@ -60,9 +60,9 @@ int dead = 0;
 int16_t current_speed = 0;
 
 // Configurable parameters
-float ki = 5;
-float kp = 5;
-float kd = 0.5;
+float ki = 2;
+float kp = 15;
+float kd = 1;
 int do_usb = 0; // Set to 1 to do USB transactions
 int include_delay = 0; // Set to 1 to include a wait in the loop to achieve target loop time
 /* USER CODE END PV */
@@ -144,9 +144,9 @@ int main(void)
 
   if(do_usb) CDC_Transmit_FS((uint8_t*)"MPU is alive\n\r", 14);
 
-  MPU_SetReg(0x6b, 0x00);
-  //MPU_SetReg(0x1c, 0x08);
-  MPU_SetReg(0x1b, 0x10);
+  MPU_SetReg(0x6b, 0x00); //Set power mode
+  MPU_SetReg(0x1c, 0x10); // Set accelerometers to +/-4g
+  MPU_SetReg(0x1b, 0x10); //Set gyros to +/-500deg/sec
 
   HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_ALL);
   HAL_TIMEx_PWMN_Start(&htim16, TIM_CHANNEL_1);
@@ -168,9 +168,9 @@ int main(void)
   {
 	  // Read Acceleration values
 	  MPU_GetReg(0x3b, acc_regs, 6);
-	  acc_vals[0] = ((int16_t)(acc_regs[0] << 8) + acc_regs[1])/16384.0;
-	  acc_vals[1] = ((int16_t)(acc_regs[2] << 8) + acc_regs[3])/16384.0;
-	  acc_vals[2] = ((int16_t)(acc_regs[4] << 8) + acc_regs[5])/16384.0;
+	  acc_vals[0] = ((int16_t)(acc_regs[0] << 8) + acc_regs[1])/8192.0; //Convert force to grams
+	  acc_vals[1] = ((int16_t)(acc_regs[2] << 8) + acc_regs[3])/8192.0; //Convert force to grams
+	  acc_vals[2] = ((int16_t)(acc_regs[4] << 8) + acc_regs[5])/8192.0; //Convert force to grams
 
 	  // Check for accelerator saturation
 	  if((acc_vals[0] > 3.9) | (acc_vals[1] > 3.9) | (acc_vals[2] > 3.9) | (acc_vals[0] < -3.9) | (acc_vals[1] < -3.9) | (acc_vals[2] < -3.9))
@@ -178,26 +178,26 @@ int main(void)
 		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 	  }
 
-	  // Read Gyro values
+	  // Read Gyro values and convert to
 	  MPU_GetReg(0x43, gyro_regs, 6);
-	  gyro_vals[0] = ((int16_t)(gyro_regs[0] << 8) + gyro_regs[1])/32.8; // + 0.1620;
-	  gyro_vals[1] = ((int16_t)(gyro_regs[2] << 8) + gyro_regs[3])/32.8;
-	  gyro_vals[2] = ((int16_t)(gyro_regs[4] << 8) + gyro_regs[5])/32.8; // - 1.1653;
+	  gyro_vals[0] = ((int16_t)(gyro_regs[0] << 8) + gyro_regs[1])/65.5 + 0.1620; //Convert to degs/s
+	  gyro_vals[1] = ((int16_t)(gyro_regs[2] << 8) + gyro_regs[3])/65.5; //Convert to degs/s
+	  gyro_vals[2] = ((int16_t)(gyro_regs[4] << 8) + gyro_regs[5])/65.5 - 1.1653; //Convert to degs/s
 
 	  // Check for gyro saturation
-	  if((gyro_vals[0] > 900) | (gyro_vals[1] > 900) | (gyro_vals[2] > 900) | (gyro_vals[0] < -900) | (gyro_vals[1] < -900) | (gyro_vals[2] < -900))
+	  if((gyro_vals[0] > 450) | (gyro_vals[1] > 450) | (gyro_vals[2] > 450) | (gyro_vals[0] < -450) | (gyro_vals[1] < -450) | (gyro_vals[2] < -450))
 	  {
 		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 	  }
+
+	  // Calculate the accelerometer angle
+	  float accAngle = (atan2(acc_vals[0],acc_vals[1]) * 180 / PI);
 
 	  // Get time delta
 	  uint32_t t_now = HAL_GetTick();
 	  uint32_t t_delta = t_now - t;
 	  delay_time += (TARGET_PERIOD - t_delta);
 	  t = t_now;
-
-	  // Calculate the accelerometer angle
-	  float accAngle = (atan2(acc_vals[0],acc_vals[1]) * 180 / PI);
 
 	  // Combine accelerometer and gyro angles
 	  angle = 0.98*(angle + gyro_vals[2]*t_delta/1000) + 0.02*accAngle;
@@ -211,7 +211,7 @@ int main(void)
 		  usb_error_flag = (usb_result == HAL_OK ? 0 : 1);
 	  }
 
-	  int16_t speed = balance(angle, gyro_vals[2], t_delta);
+	  int16_t speed = balance(angle+1, gyro_vals[2], t_delta);
 
 	  if(include_delay)
 	  {
@@ -502,6 +502,7 @@ int16_t balance(float angle, float delta_angle, uint32_t t_delta)
 	desired_speed += (desired_speed > 0 ? pos_dead_band : (desired_speed < 0 ? neg_dead_band : 0));
 
 	current_speed = desired_speed;
+
 	SET_PWM_SPEED(current_speed);
 
 	return desired_speed;
